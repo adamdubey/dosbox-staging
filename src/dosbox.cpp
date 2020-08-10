@@ -21,15 +21,17 @@
 
 #include "dosbox.h"
 
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <unistd.h>
-
-#include <chrono>
+#include <functional>
+#include <mutex>
+#include <string.h>
 #include <thread>
+#include <unistd.h>
 
 #include "debug.h"
 #include "cpu.h"
@@ -55,7 +57,15 @@
 #include "hardware.h"
 #include "ne2000.h"
 
+
+// Shorthand for our clock and time units
+using clockT = std::chrono::steady_clock;
+using timeT = std::chrono::time_point<clockT>;
+using msT = std::chrono::milliseconds;
+using usT = std::chrono::microseconds;
+
 bool shutdown_requested = false;
+
 MachineType machine;
 SVGACards svgaCard;
 
@@ -129,6 +139,10 @@ void SHELL_Init();
 
 void INT10_Init(Section*);
 
+void Null_Init([[maybe_unused]] Section *sec) {
+	// do nothing
+}
+
 static LoopHandler * loop;
 
 static int ticksRemain;
@@ -141,11 +155,36 @@ void increaseticks();
 
 bool mono_cga=false;
 
-void Null_Init([[maybe_unused]] Section *sec) {
-	// do nothing
+void increaseticks_fixed();
+
+static constexpr auto frame_pace_us = usT(1000 * 1000 / 60);
+static int frame_balance = 0;
+static int pic_balance = 0;
+static std::thread pic_pacer;
+static std::thread frame_pacer;
+static std::mutex pic_balance_mutex;
+static std::mutex frame_balance_mutex;
+
+static void pace_pic()
+{
+	while (true) {
+		std::this_thread::sleep_for(msT(1));
+		std::lock_guard<std::mutex> guard(pic_balance_mutex);
+		pic_balance++;
+	}
 }
 
-static Bitu Normal_Loop() {
+static void pace_frame()
+{
+	while (true) {
+		std::this_thread::sleep_for(frame_pace_us);
+		std::lock_guard<std::mutex> guard(frame_balance_mutex);
+		frame_balance++;
+	}
+}
+
+static Bitu Normal_Loop()
+{
 	Bits ret;
 	while (1) {
 		if (PIC_RunQueue()) {
@@ -159,16 +198,47 @@ static Bitu Normal_Loop() {
 #if C_DEBUG
 			if (DEBUG_ExitLoop()) return 0;
 #endif
+			if (frame_balance) {
+				if (!GFX_Events()) {
+					return 0;
+				}
+				std::lock_guard<std::mutex> guard(frame_balance_mutex);
+				frame_balance = 0;
+			}
+
 		} else {
-			if (!GFX_Events())
-				return 0;
 			if (ticksRemain > 0) {
 				TIMER_AddTick();
 				ticksRemain--;
-			} else {increaseticks();return 0;}
+			} else {
+				increaseticks_fixed();
+				return 0;
+			}
 		}
 	}
 }
+
+void increaseticks_fixed()
+{
+	Bit32u ticksNew;
+	ticksNew = GetTicks();
+	if (ticksNew <= ticksLast) {
+		ticksAdded = 0;
+
+		while (pic_balance < 1)
+			std::this_thread::sleep_for(usT(50));
+		std::lock_guard<std::mutex> guard(pic_balance_mutex);
+		pic_balance--;
+
+		Bit32s timeslept = GetTicks() - ticksNew;
+		return; //0
+	}
+
+	ticksRemain = ticksNew-ticksLast;
+	ticksLast = ticksNew;
+}
+//For trying other delays
+#define wrap_delay(a) SDL_Delay(a)
 
 void increaseticks() { //Make it return ticksRemain and set it in the function above to remove the global variable.
 	if (GCC_UNLIKELY(ticksLocked)) { // For Fast Forward Mode
@@ -211,7 +281,7 @@ void increaseticks() { //Make it return ticksRemain and set it in the function a
 	ticksLast = ticksNew;
 	ticksDone += ticksRemain;
 	if ( ticksRemain > 20 ) {
-//		LOG(LOG_MISC,LOG_ERROR)("large remain %d",ticksRemain);
+		LOG_MSG("large remain %d",ticksRemain);
 		ticksRemain = 20;
 	}
 	ticksAdded = ticksRemain;
@@ -310,6 +380,15 @@ void DOSBOX_SetNormalLoop() {
 
 void DOSBOX_RunMachine()
 {
+	static bool started = false;
+	if (!started) {
+		pic_pacer = std::thread(&pace_pic);
+		pic_pacer.detach();
+		frame_pacer = std::thread(&pace_frame);
+		frame_pacer.detach();
+		started = true;
+	}
+
 	while ((*loop)() == 0 && !shutdown_requested)
 		;
 }
