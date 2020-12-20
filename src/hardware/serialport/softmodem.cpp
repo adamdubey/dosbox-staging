@@ -917,7 +917,7 @@ void CSerialModem::Timer2()
 
 			if (cmdpos < 99) {
 				Echo(txval);
-				cmdbuf[cmdpos] = txval;
+				cmdbuf[cmdpos] = static_cast<char>(txval);
 				cmdpos++;
 			}
 		} else {
