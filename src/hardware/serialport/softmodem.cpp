@@ -20,12 +20,13 @@
 
 #if C_MODEM
 
+#include <algorithm>
 #include <ctype.h>
+#include <fstream>
+#include <sstream>
 #include <stdlib.h>
 #include <string.h>
 #include <utility>
-#include <fstream>
-#include <sstream>
 
 #include "string_utils.h"
 #include "serialport.h"
@@ -112,8 +113,8 @@ static const char *MODEM_GetAddressFromPhone(const char *input) {
 
 CSerialModem::CSerialModem(const uint8_t port_idx, CommandLine *cmd)
         : CSerial(port_idx, cmd),
-          rqueue(std::make_unique<CFifo>(MODEM_BUFFER_QUEUE_SIZE)),
-          tqueue(std::make_unique<CFifo>(MODEM_BUFFER_QUEUE_SIZE)),
+          rqueue(MODEM_BUFFER_QUEUE_SIZE),
+          tqueue(MODEM_BUFFER_QUEUE_SIZE),
           telClient({}),
           dial({})
 {
@@ -166,8 +167,9 @@ void CSerialModem::handleUpperEvent(uint16_t type)
 	case SERIAL_RX_EVENT: {
 		// check for bytes to be sent to port
 		if (CSerial::CanReceiveByte())
-			if (rqueue->inuse() && (CSerial::getRTS() || (flowcontrol != 3))) {
-				uint8_t rbyte = rqueue->getb();
+			if (rqueue.isUsed() &&
+			    (CSerial::getRTS() || (flowcontrol != 3))) {
+				uint8_t rbyte = rqueue.pop();
 				// LOG_MSG("SERIAL: Port %" PRIu8 " modem sending byte %2x"
 				//         " back to UART3", GetPortNumber(), rbyte);
 				CSerial::receiveByte(rbyte);
@@ -176,9 +178,9 @@ void CSerialModem::handleUpperEvent(uint16_t type)
 		break;
 	}
 	case MODEM_TX_EVENT: {
-		if (tqueue->left()) {
-			tqueue->addb(waiting_tx_character);
-			if (tqueue->left() < 2) {
+		if (!tqueue.isFull()) {
+			tqueue.push(waiting_tx_character);
+			if (tqueue.numFreeSlots() < 2) {
 				CSerial::setCTS(false);
 			}
 		} else {
@@ -193,7 +195,7 @@ void CSerialModem::handleUpperEvent(uint16_t type)
 		break;
 	}
 	case SERIAL_POLLING_EVENT: {
-		if (rqueue->inuse()) {
+		if (rqueue.isUsed()) {
 			removeEvent(SERIAL_RX_EVENT);
 			setEvent(SERIAL_RX_EVENT, (float)0.01);
 		}
@@ -209,27 +211,28 @@ void CSerialModem::handleUpperEvent(uint16_t type)
 }
 
 void CSerialModem::SendLine(const char *line) {
-	rqueue->addb(reg[MREG_CR_CHAR]);
-	rqueue->addb(reg[MREG_LF_CHAR]);
-	rqueue->adds((uint8_t *)line, strlen(line));
-	rqueue->addb(reg[MREG_CR_CHAR]);
-	rqueue->addb(reg[MREG_LF_CHAR]);
+	rqueue.push(reg[MREG_CR_CHAR]);
+	rqueue.push(reg[MREG_LF_CHAR]);
+	const auto unsigned_addr = reinterpret_cast<const uint8_t *>(line);
+	rqueue.pushMany(unsigned_addr, strlen(line));
+	rqueue.push(reg[MREG_CR_CHAR]);
+	rqueue.push(reg[MREG_LF_CHAR]);
 }
 
 // only for numbers < 1000...
 void CSerialModem::SendNumber(uint32_t val)
 {
-	rqueue->addb(reg[MREG_CR_CHAR]);
-	rqueue->addb(reg[MREG_LF_CHAR]);
+	rqueue.push(reg[MREG_CR_CHAR]);
+	rqueue.push(reg[MREG_LF_CHAR]);
 
-	rqueue->addb(val / 100 + '0');
+	rqueue.push(static_cast<uint8_t>(val / 100 + '0'));
 	val = val%100;
-	rqueue->addb(val / 10 + '0');
+	rqueue.push(static_cast<uint8_t>(val / 10 + '0'));
 	val = val%10;
-	rqueue->addb(val + '0');
+	rqueue.push(static_cast<uint8_t>(val + '0'));
 
-	rqueue->addb(reg[MREG_CR_CHAR]);
-	rqueue->addb(reg[MREG_LF_CHAR]);
+	rqueue.push(reg[MREG_CR_CHAR]);
+	rqueue.push(reg[MREG_LF_CHAR]);
 }
 
 void CSerialModem::SendRes(const ResTypes response) {
@@ -396,7 +399,7 @@ void CSerialModem::EnterIdleState(){
 	CSerial::setRI(false);
 	CSerial::setDSR(true);
 	CSerial::setCTS(true);
-	tqueue->clear();
+	tqueue.clear();
 }
 
 void CSerialModem::EnterConnectedState() {
@@ -749,9 +752,9 @@ void CSerialModem::TelnetEmulation(uint8_t *data, uint32_t size)
 					        GetPortNumber(), c);
 					if (telClient.command > 250) {
 						/* Reject anything we don't recognize */
-						tqueue->addb(0xff);
-						tqueue->addb(252);
-						tqueue->addb(c); /* We won't do crap! */
+						tqueue.push(0xff);
+						tqueue.push(252);
+						tqueue.push(c); /* We won't do crap! */
 					}
 			}
 			switch (telClient.command) {
@@ -768,41 +771,43 @@ void CSerialModem::TelnetEmulation(uint8_t *data, uint32_t size)
 				case 253: /* Do */
 					if (c == 0) {
 						telClient.binary[TEL_CLIENT] = true;
-							tqueue->addb(0xff);
-							tqueue->addb(251);
-							tqueue->addb(0); /* Will do binary transfer */
+						tqueue.push(0xff);
+						tqueue.push(251);
+						tqueue.push(0); /* Will do binary
+						                   transfer */
 					}
 					if (c == 1) {
 						telClient.echo[TEL_CLIENT] = false;
-							tqueue->addb(0xff);
-							tqueue->addb(252);
-							tqueue->addb(1); /* Won't echo (too lazy) */
+						tqueue.push(0xff);
+						tqueue.push(252);
+						tqueue.push(1); /* Won't echo
+						                   (too lazy) */
 					}
 					if (c == 3) {
 						telClient.supressGA[TEL_CLIENT] = true;
-							tqueue->addb(0xff);
-							tqueue->addb(251);
-							tqueue->addb(3); /* Will Suppress GA */
+						tqueue.push(0xff);
+						tqueue.push(251);
+						tqueue.push(3); /* Will Suppress GA */
 					}
 					break;
 				case 254: /* Don't */
 					if (c == 0) {
 						telClient.binary[TEL_CLIENT] = false;
-							tqueue->addb(0xff);
-							tqueue->addb(252);
-							tqueue->addb(0); /* Won't do binary transfer */
+						tqueue.push(0xff);
+						tqueue.push(252);
+						tqueue.push(0); /* Won't do binary transfer */
 					}
 					if (c == 1) {
 						telClient.echo[TEL_CLIENT] = false;
-							tqueue->addb(0xff);
-							tqueue->addb(252);
-							tqueue->addb(1); /* Won't echo (fine by me) */
+						tqueue.push(0xff);
+						tqueue.push(252);
+						tqueue.push(1); /* Won't echo (fine by me) */
 					}
 					if (c == 3) {
 						telClient.supressGA[TEL_CLIENT] = true;
-							tqueue->addb(0xff);
-							tqueue->addb(251);
-							tqueue->addb(3); /* Will Suppress GA (too lazy) */
+						tqueue.push(0xff);
+						tqueue.push(251);
+						tqueue.push(3); /* Will Suppress GA (too lazy) */
 					}
 					break;
 				default:
@@ -827,7 +832,7 @@ void CSerialModem::TelnetEmulation(uint8_t *data, uint32_t size)
 				/* Binary data with value of 255 */
 				telClient.inIAC = false;
 				telClient.recCommand = false;
-					rqueue->addb(0xff);
+				rqueue.push(0xff);
 				continue;
 			}
 		}
@@ -836,7 +841,7 @@ void CSerialModem::TelnetEmulation(uint8_t *data, uint32_t size)
 				telClient.inIAC = true;
 				continue;
 			}
-			rqueue->addb(c);
+			rqueue.push(c);
 		}
 	}
 }
@@ -844,7 +849,7 @@ void CSerialModem::TelnetEmulation(uint8_t *data, uint32_t size)
 void CSerialModem::Echo(uint8_t ch)
 {
 	if (echo) {
-		rqueue->addb(ch);
+		rqueue.push(ch);
 		// LOG_MSG("SERIAL: Port %" PRIu8 " echo back to queue: %x.",
 		//         GetPortNumber(), txval);
 	}
@@ -875,8 +880,8 @@ void CSerialModem::Timer2()
 
 	// Handle incoming data from serial port, read as much as available
 	CSerial::setCTS(true);	// buffer will get 'emptier', new data can be received
-	while (tqueue->inuse()) {
-		const uint8_t txval = tqueue->getb();
+	while (tqueue.isUsed()) {
+		const uint8_t txval = tqueue.pop();
 		if (commandmode) {
 			if (cmdpos < 2) {
 				// Ignore everything until we see "AT" sequence.
@@ -936,19 +941,22 @@ void CSerialModem::Timer2()
 		}
 	}
 	// Handle incoming to the serial port
-	if (!commandmode && clientsocket && rqueue->left()) {
-		size_t usesize = rqueue->left() >= 16 ? 16 : rqueue->left();
-		// size_t usesize = 1;
-		if (!clientsocket->ReceiveArray(tmpbuf, usesize)) {
+	if (!commandmode && clientsocket && !rqueue.isFull()) {
+		constexpr size_t max_recv_size = 16;
+		size_t bytes_to_recv = std::min(rqueue.numFreeSlots(), max_recv_size);
+		if (!clientsocket->ReceiveArray(tmpbuf, bytes_to_recv)) {
 			SendRes(ResNOCARRIER);
 			LOG_INFO("SERIAL: No carrier on receive");
 			EnterIdleState();
-		} else if (usesize) {
+		} else if (bytes_to_recv) {
 			// Filter telnet commands
-			if (telnet_mode)
-				TelnetEmulation(tmpbuf, usesize);
-			else
-				rqueue->adds(tmpbuf,usesize);
+			if (telnet_mode) {
+				assert(bytes_to_recv <= UINT32_MAX);
+				TelnetEmulation(tmpbuf, static_cast<uint32_t>(
+				                                bytes_to_recv));
+			} else {
+				rqueue.pushMany(tmpbuf, bytes_to_recv);
+			}
 		}
 	}
 	// Check for incoming calls
@@ -1031,8 +1039,8 @@ void CSerialModem::Timer2()
 //TODO
 void CSerialModem::RXBufferEmpty() {
 	// see if rqueue has some more bytes
-	if (rqueue->inuse() && (CSerial::getRTS() || (flowcontrol != 3))){
-		uint8_t rbyte = rqueue->getb();
+	if (rqueue.isUsed() && (CSerial::getRTS() || (flowcontrol != 3))) {
+		uint8_t rbyte = rqueue.pop();
 		// LOG_MSG("SERIAL: Port %" PRIu8 " modem sending byte %2x back to UART1.",
 		//         GetPortNumber(), rbyte);
 		CSerial::receiveByte(rbyte);
