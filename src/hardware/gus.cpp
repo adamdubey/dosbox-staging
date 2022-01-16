@@ -585,7 +585,7 @@ void Voice::WriteWaveRate(uint16_t val) noexcept
 Gus::Gus(uint16_t port, uint8_t dma, uint8_t irq, const std::string &ultradir)
         : render_buffer(BUFFER_FRAMES * 2), // 2 samples/frame, L & R channels
           play_buffer(BUFFER_FRAMES * 2),   // 2 samples/frame, L & R channels
-          soft_limiter("GUS"),
+          soft_limiter("GUS", SoftLimiter::ReleaseRate::Slow),
           port_base(port - 0x200u),
           dma2(dma),
           irq1(irq),

@@ -31,8 +31,9 @@ constexpr static auto relaxed = std::memory_order_relaxed;
 
 constexpr static float bounds = static_cast<float>(INT16_MAX - 1);
 
-SoftLimiter::SoftLimiter(const std::string &name)
-        : channel_name(name)
+SoftLimiter::SoftLimiter(const std::string &name, const ReleaseRate release)
+        : channel_name(name),
+          release_rate(release)
 {
 	UpdateLevels({1, 1}, 1); // default to unity (ie: no) scaling
 	limited_tally = 0;
@@ -251,12 +252,10 @@ void SoftLimiter::SaveTailFrame(const uint16_t frames,
 void SoftLimiter::Release() noexcept
 {
 	// Decrement the peak(s) one step
-	constexpr float delta_db = 0.002709201f; // 0.0235 dB increments
-	constexpr float release_amplitude = bounds * delta_db;
 	if (global_peaks.left > bounds)
-		global_peaks.left -= release_amplitude;
+		global_peaks.left -= enum_val(release_rate);
 	if (global_peaks.right > bounds)
-		global_peaks.right -= release_amplitude;
+		global_peaks.right -= enum_val(release_rate);
 }
 
 // Print helpful statistics about the signal thus-far

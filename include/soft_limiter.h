@@ -1,8 +1,8 @@
 /*
  *  SPDX-License-Identifier: GPL-2.0-or-later
  *
- *  Copyright (C) 2020-2021  kcgen <kcgen@users.noreply.github.com>
- *  Copyright (C) 2020-2021  The DOSBox Staging Team
+ *  Copyright (C) 2020-2022  kcgen <kcgen@users.noreply.github.com>
+ *  Copyright (C) 2020-2022  The DOSBox Staging Team
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -92,6 +92,12 @@ sequence required limiting.
 
 class SoftLimiter {
 public:
+	// How fast the release phase restores amplitude after limiting
+	enum class ReleaseRate {
+		Fast = 20, // amplitude steps per-ms
+		Medium = 10,
+		Slow = 5,
+	};
 	using in_iterator_t = typename std::vector<float>::const_iterator;
 
 	// Prevent default object construction, copy, and assignment
@@ -99,7 +105,7 @@ public:
 	SoftLimiter(const SoftLimiter &) = delete;
 	SoftLimiter &operator=(const SoftLimiter &) = delete;
 
-	SoftLimiter(const std::string &name);
+	SoftLimiter(const std::string &name, const ReleaseRate release);
 
 	void Process(const std::vector<float> &in,
 	             uint16_t req_frames,
@@ -146,8 +152,11 @@ private:
 	                 float tail,
 	                 std::vector<int16_t> &out);
 
+	// read-only members
+	const std::string channel_name;
+	const ReleaseRate release_rate;
+
 	// Mutable members
-	std::string channel_name = {};
 	std::atomic<AudioFrame> prescale = {};
 	AudioFrame global_peaks = {0, 0};
 	AudioFrame tail_frame = {0, 0};
