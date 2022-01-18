@@ -323,6 +323,26 @@ uint8_t adlib_commandreg = ADLIB_CMD_DEFAULT;
 
 static std::unique_ptr<Gus> gus = nullptr;
 
+// Adjust the given GUS's memory address for 16-bit PCM or DMA operations.
+// The resulting 16-bit address can then be left-shifted by 4 and used as an
+// offset into the GUS's RAM.
+static uint32_t adjust_addr_for_16b(const uint16_t addr)
+{
+	const auto upper = addr & 0b1100'0000'0000'0000;
+	const auto lower = addr & 0b0001'1111'1111'1111;
+	return upper | (lower << 1);
+}
+
+// Adjust the given GUS's RAM offset for 16-bit PCM or DMA operations.
+// The resulting offset can then be right-shifted by 4 and saved into the GUS's
+// DMA address register.
+static uint32_t adjust_offset_for_16b(const uint32_t offset)
+{
+	const auto upper = offset & 0b1100'0000'0000'0000'0000;
+	const auto lower = offset & 0b0011'1111'1111'1111'1111;
+	return upper | (lower >> 1);
+}
+
 Voice::Voice(uint8_t num, VoiceIrq &irq) noexcept
         : vol_ctrl{irq.vol_state},
           wave_ctrl{irq.wave_state},
