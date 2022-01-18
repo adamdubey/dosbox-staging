@@ -232,8 +232,6 @@ private:
 	void CheckVoiceIrq();
 	uint32_t GetDmaOffset() noexcept;
 	void UpdateDmaAddr(uint32_t offset) noexcept;
-	uint32_t Dma8Addr() noexcept;
-	uint32_t Dma16Addr() noexcept;
 	void DmaCallback(DmaChannel *chan, DMAEvent event);
 	void StartDmaTransfers();
 	bool IsDmaPcm16Bit() noexcept;
@@ -755,18 +753,6 @@ void Gus::UpdateDmaAddr(uint32_t offset) noexcept
 	dma_addr_nibble = check_cast<uint8_t>(adjusted & 0xf); // hang onto the last nibble
 }
 
-uint32_t Gus::Dma8Addr() noexcept
-{
-	return static_cast<uint32_t>(dma_addr << 4);
-}
-
-uint32_t Gus::Dma16Addr() noexcept
-{
-	const auto lower = dma_addr & 0b0001'1111'1111'1111;
-	const auto upper = dma_addr & 0b1100'0000'0000'0000;
-	const auto combined = (lower << 1) | upper;
-	return static_cast<uint32_t>(combined << 4);
-}
 
 bool Gus::PerformDmaTransfer()
 {
@@ -779,7 +765,9 @@ bool Gus::PerformDmaTransfer()
 	        dma_channel->currcnt + 1);
 #endif
 
-	const auto offset = IsDmaXfer16Bit() ? Dma16Addr() : Dma8Addr();
+	// Get the current DMA offset relative to the block of GUS memory
+	const auto offset = GetDmaOffset();
+
 	const uint16_t desired = dma_channel->currcnt + 1;
 
 	// All of the operations below involve reading, writing, or skipping
