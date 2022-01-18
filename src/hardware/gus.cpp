@@ -230,6 +230,8 @@ private:
 	void BeginPlayback();
 	void CheckIrq();
 	void CheckVoiceIrq();
+	uint32_t GetDmaOffset() noexcept;
+	void UpdateDmaAddr(uint32_t offset) noexcept;
 	uint32_t Dma8Addr() noexcept;
 	uint32_t Dma16Addr() noexcept;
 	void DmaCallback(DmaChannel *chan, DMAEvent event);
@@ -299,6 +301,7 @@ private:
 
 	// DMA states
 	uint16_t dma_addr = 0u;
+	uint8_t dma_addr_nibble = 0u;
 	// dma_ctrl would normally be a uint8_t as real hardware uses 8 bits,
 	// but we store the DMA terminal count status in the 9th bit
 	uint16_t dma_ctrl = 0u;
@@ -731,6 +734,25 @@ void Gus::CheckVoiceIrq()
 		if (voice_irq.status >= active_voices)
 			voice_irq.status = 0;
 	}
+}
+
+// Returns an offset into the GUS's memory space holding the next
+// sample (or address) that will be read or written to via DMA. This offset
+// is derived from the 16-bit DMA address register.
+uint32_t Gus::GetDmaOffset() noexcept
+{
+	const auto adjusted = IsDmaXfer16Bit() ? adjust_addr_for_16b(dma_addr)
+	                                       : dma_addr;
+	return check_cast<uint32_t>(adjusted << 4) + dma_addr_nibble;
+}
+
+// Saves the GUS memory offset into the DMA address register.
+void Gus::UpdateDmaAddr(uint32_t offset) noexcept
+{
+	const auto adjusted = IsDmaXfer16Bit() ? adjust_offset_for_16b(offset)
+	                                       : offset;
+	dma_addr = check_cast<uint16_t>(adjusted >> 4); // pack it into the 16-bit register
+	dma_addr_nibble = check_cast<uint8_t>(adjusted & 0xf); // hang onto the last nibble
 }
 
 uint32_t Gus::Dma8Addr() noexcept
@@ -1171,7 +1193,7 @@ void Gus::StopPlayback()
 	voice_index = 0u;
 	active_voices = 0u;
 
-	dma_addr = 0u;
+	UpdateDmaAddr(0);
 	dram_addr = 0u;
 	register_data = 0u;
 	selected_register = 0u;
@@ -1337,6 +1359,7 @@ void Gus::WriteToRegister()
 		return;
 	case 0x42: // Gravis DRAM DMA address register
 		dma_addr = register_data;
+		dma_addr_nibble = 0u; // invalidate the nibble
 		return;
 	case 0x43: // LSW Peek/poke DRAM position
 		dram_addr = (0xf0000 & dram_addr) |
