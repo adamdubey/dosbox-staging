@@ -808,6 +808,7 @@ bool Gus::PerformDmaTransfer()
 		dma_ctrl |= DMA_TC_STATUS_BITMASK;
 		irq_status |= 0x80;
 		CheckIrq();
+		assert(dma_channel->tcount); // hit terminal count, we're done
 		return false;
 	}
 	return true;
